@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  Stage:
+    Type: String
+    Description: Stage of the application deployment
+  RepoName:
+    Type: String
+    Description: GitLab Repo Name
+  BranchName:
+    Type: String
+    Description: Branch to use from the repo. Only the name
+    Default: master
+  DeploymentAccountID:
+    Type: String
+    Description: The AWS account where the resources will be deployed
+  SharedServicesAccountConfigStackName:
+    Type: String
+    Description: Stack name for the account config setup
+
+Resources:
+  CodeBuildServerlessDeployDevelopment:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.deploy.yml
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/eb-nodejs-6.10.0-amazonlinux-64:4.0.0
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: STAGE
+            Value: !Ref Stage
+          - Name: REGION
+            Value: !Ref AWS::Region
+          - Name: ACCOUNT
+            Value: !Ref DeploymentAccountID
+          - Name: SERVICE_ROLE
+            Value: !Sub arn:aws:iam::${DeploymentAccountID}:role/SharedServiceRole
+      ServiceRole: 
+        Fn::ImportValue: !Sub "${SharedServicesAccountConfigStackName}-PipelineServiceRole"
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn:
+        Fn::ImportValue: !Sub "${SharedServicesAccountConfigStackName}-PipelineServiceRole"
+      ArtifactStore:
+        Type: S3
+        Location:
+          Fn::ImportValue: !Sub "${SharedServicesAccountConfigStackName}-ArtifactBucketName"
+        EncryptionKey:
+          Id:
+            Fn::ImportValue: !Sub "${SharedServicesAccountConfigStackName}-KMSKeyArn"
+          Type: KMS
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: S3
+              Configuration:
+                S3Bucket: 
+                  Fn::ImportValue: !Sub "${SharedServicesAccountConfigStackName}-CodeBucketName"
+                S3ObjectKey: !Sub "${BranchName}-bundle.zip"
+              OutputArtifacts:
+                - Name: ProjectSrc
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildServerlessDeployDevelopment
+              InputArtifacts:
+                - Name: ProjectSrc
+              OutputArtifacts:
+                - Name: ProjectBuild
+              RunOrder: 1
+
+Outputs:
+  PipelineUrl:
+    Value: !Sub https://console.aws.amazon.com/codepipeline/home?region=${AWS::Region}#/view/${Pipeline}

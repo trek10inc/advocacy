@@ -1,0 +1,36 @@
+# Fully featured pipeline with stage promotions, approvals, etc
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  SharedServiceAccountID:
+    Type: String
+    Description: The AWS Account ID for the shared services account
+  PipelineServiceRoleName:
+    Type: String
+    Description: The name of the pipeline service role in the shared services account
+    Default: PipelineServiceRole
+  CMKARN:
+    Description: ARN of the KMS CMK created in SharedServices account
+    Type: String
+
+Resources:
+  SharedServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SharedServiceRole
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${SharedServiceAccountID}:role/${PipelineServiceRoleName}
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+Outputs:
+  SharedServiceRoleArn:
+    Value: !GetAtt SharedServiceRole.Arn

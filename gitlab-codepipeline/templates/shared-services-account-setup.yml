@@ -1,0 +1,351 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CodePipelines shared resources and security"
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "AWS Accounts"
+          Parameters:
+            - DevAwsAccountId
+            - TestAwsAccountId
+            - ProdAwsAccountId
+            - SharedServicesAwsAccountId
+    ParameterLabels:
+      DevAwsAccountId:
+        default: Dev
+      TestAwsAccountId:
+        default: Test
+      ProdAwsAccountId:
+        default: Production
+      SharedServicesAwsAccountId:
+        default: Shared Services
+
+Parameters:
+  # Param Group: AWS Accounts
+  DevAwsAccountId:
+    Description: AWS AccountNumber for Dev
+    Type: String
+    Default: ""
+  TestAwsAccountId:
+    Description: AWS AccountNumber for Test
+    Type: String
+    Default: ""
+  ProdAwsAccountId:
+    Description: AWS AccountNumber for Production
+    Type: String
+    Default: ""
+  SharedServicesAwsAccountId:
+    Description: AWS AccountNumber for Shared Services
+    Type: String
+    Default: ""
+
+Conditions:
+  AddDevAccountPermissions: !Not [!Equals [ !Ref DevAwsAccountId, "" ]]
+  AddTestAccountPermissions: !Not [!Equals [ !Ref TestAwsAccountId, "" ]]
+  AddProdAccountPermissions: !Not [!Equals [ !Ref ProdAwsAccountId, "" ]]
+  AddSharedServicesAccountPermissions: !Not [!Equals [ !Ref SharedServicesAwsAccountId, "" ]]
+
+Resources:
+  PipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: PipelineServiceRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+              - codepipeline.amazonaws.com
+              - codebuild.amazonaws.com
+              - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                    - codecommit:GetBranch
+                    - codecommit:GetCommit
+                    - codecommit:UploadArchive
+                    - codecommit:GetUploadArchiveStatus
+                    - codecommit:CancelUploadArchive
+                    - iam:ListRoles
+                    - iam:PassRole
+                    - s3:ListAllMyBuckets
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:ListObjects
+                  - s3:ListBucket
+                  - s3:PutObject
+                  - s3:Get*
+                Resource: 
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub ${ArtifactBucket.Arn}/*
+                  - !GetAtt CodeBucket.Arn
+                  - !Sub ${CodeBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                  - sns:Publish
+                  - lambda:Invoke*
+                  - Lambda:List*
+                  - codepipeline:*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                    - sts:AssumeRole
+                Resource: 
+                  - !If
+                    - AddDevAccountPermissions
+                    - !Sub arn:aws:iam::${DevAwsAccountId}:role/SharedServiceRole
+                    - !Ref AWS::NoValue
+                  - !If
+                    - AddTestAccountPermissions
+                    - !Sub arn:aws:iam::${TestAwsAccountId}:role/SharedServiceRole
+                    - !Ref AWS::NoValue
+                  - !If
+                    - AddProdAccountPermissions
+                    - !Sub arn:aws:iam::${ProdAwsAccountId}:role/SharedServiceRole
+                    - !Ref AWS::NoValue
+                  - !If
+                    - AddSharedServicesAccountPermissions
+                    - !Sub arn:aws:iam::${SharedServicesAwsAccountId}:role/SharedServiceRole
+                    - !Ref AWS::NoValue
+  KMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Code & Deployment Artifact Key
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: !Ref AWS::StackName
+        Statement:
+          - Sid: Allows admin of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - "kms:Create*"
+              - "kms:Describe*"
+              - "kms:Enable*"
+              - "kms:List*"
+              - "kms:Put*"
+              - "kms:Update*"
+              - "kms:Revoke*"
+              - "kms:Disable*"
+              - "kms:Get*"
+              - "kms:Delete*"
+              - "kms:ScheduleKeyDeletion"
+              - "kms:CancelKeyDeletion"
+            Resource: "*"
+          - Sid: Allow use of the key for CodePipeline
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root
+                - !If
+                  - AddDevAccountPermissions
+                  - !Sub arn:aws:iam::${DevAwsAccountId}:root
+                  - !Ref AWS::NoValue
+                - !If
+                  - AddTestAccountPermissions
+                  - !Sub arn:aws:iam::${TestAwsAccountId}:root
+                  - !Ref AWS::NoValue
+                - !If
+                  - AddProdAccountPermissions
+                  - !Sub arn:aws:iam::${ProdAwsAccountId}:root
+                  - !Ref AWS::NoValue
+                - !If
+                  - AddSharedServicesAccountPermissions
+                  - !Sub arn:aws:iam::${SharedServicesAwsAccountId}:root
+                  - !Ref AWS::NoValue
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+          - Sid: Allow access through Amazon S3 for all principals in the accounts that are authorized to use Amazon S3
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:ViaService: !Sub s3.${AWS::Region}.amazonaws.com
+                kms:CallerAccount:
+                  - !Ref AWS::AccountId
+
+  PipelineNotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: PipelineNotifications
+      TopicName: PipelineNotifications
+
+  KMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${AWS::StackName}
+      TargetKeyId: !Ref KMSKey
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub pipeline-artifacts-${AWS::AccountId}-${AWS::Region}
+
+  CodeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketName: !Sub code-artifacts-${AWS::AccountId}-${AWS::Region}
+
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - s3:*
+            Effect: Allow
+            Resource:
+              - !Sub ${ArtifactBucket.Arn}
+              - !Sub ${ArtifactBucket.Arn}/*
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root
+          - Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Effect: Allow
+            Resource:
+              - !Sub ${ArtifactBucket.Arn}
+              - !Sub ${ArtifactBucket.Arn}/*
+            Principal:
+              AWS:
+                - !If
+                  - AddDevAccountPermissions
+                  - !Sub arn:aws:iam::${DevAwsAccountId}:root
+                  - !Ref AWS::NoValue
+                - !If
+                  - AddTestAccountPermissions
+                  - !Sub arn:aws:iam::${TestAwsAccountId}:root
+                  - !Ref AWS::NoValue
+                - !If
+                  - AddProdAccountPermissions
+                  - !Sub arn:aws:iam::${ProdAwsAccountId}:root
+                  - !Ref AWS::NoValue
+                - !If
+                  - AddSharedServicesAccountPermissions
+                  - !Sub arn:aws:iam::${SharedServicesAwsAccountId}:root
+                  - !Ref AWS::NoValue
+
+  CodeBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CodeBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - s3:*
+            Effect: Allow
+            Resource:
+              - !Sub ${CodeBucket.Arn}
+              - !Sub ${CodeBucket.Arn}/*
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root
+                - !GetAtt PipelineServiceRole.Arn
+          - Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Effect: Allow
+            Resource:
+              - !Sub ${CodeBucket.Arn}
+              - !Sub ${CodeBucket.Arn}/*
+            Principal:
+              AWS:
+                - !If
+                  - AddDevAccountPermissions
+                  - !Sub arn:aws:iam::${DevAwsAccountId}:root
+                  - !Ref AWS::NoValue
+                - !If
+                  - AddTestAccountPermissions
+                  - !Sub arn:aws:iam::${TestAwsAccountId}:root
+                  - !Ref AWS::NoValue
+                - !If
+                  - AddProdAccountPermissions
+                  - !Sub arn:aws:iam::${ProdAwsAccountId}:root
+                  - !Ref AWS::NoValue
+                - !If
+                  - AddSharedServicesAccountPermissions
+                  - !Sub arn:aws:iam::${SharedServicesAwsAccountId}:root
+                  - !Ref AWS::NoValue
+Outputs:
+  ArtifactBucketName:
+    Description: Artifact Bucket Name
+    Value: !Ref ArtifactBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-ArtifactBucketName
+  CodeBucketName:
+    Description: Code Bucket Name
+    Value: !Ref CodeBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-CodeBucketName
+  PipelineServiceRoleArn:
+    Description: ARN of the IAM role used by CodePipeline and CodeBuild in this account
+    Value: !GetAtt PipelineServiceRole.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-PipelineServiceRole
+  KMSKeyArn:
+    Description: KMS Key for codepipelines and artifacts
+    Value: !GetAtt KMSKey.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-KMSKeyArn
+  KMSKeyId:
+    Description: KMS Key Id for codepipelines and artifacts
+    Value: !Ref KMSKey
+    Export:
+      Name: !Sub ${AWS::StackName}-KMSKeyId
+  KMSKeyAlias:
+    Description: KMS Key Alias for codepipelines and artifacts
+    Value: !Ref KMSAlias
+    Export:
+      Name: !Sub ${AWS::StackName}-KMSKeyAlias
+  PipelineNotificationTopic:
+    Description: Notification SNS Arn for shared pipeline notificiations
+    Value: !Ref PipelineNotificationsTopic
+    Export:
+      Name: !Sub ${AWS::StackName}-PipelineNotificationTopic
+  PipelineNotificationTopicName:
+    Description: repo activity notifications topic name
+    Value: !GetAtt PipelineNotificationsTopic.TopicName
+    Export:
+      Name: !Sub ${AWS::StackName}-PipelineNotificationTopicName
